@@ -55,7 +55,43 @@ jobs:
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's/<application/<application android:allowBackup="false"/' "$M"
-          sed -i 's/android:label="[^"]*"/android:label="رفيق الجامعة"/' "$M"
+          sed -i 's/android:label="[^"]*"/android:label="رفيق الطالب الجامعي"/' "$M"
+
+      - name: إعداد التنبيهات والصلاحيات
+        if: hashFiles('android/app/src/main/AndroidManifest.xml') != ''
+        run: |
+          python3 - <<'PYEOF'
+          import os, re
+          M = 'android/app/src/main/AndroidManifest.xml'
+          s = open(M, encoding='utf-8').read()
+          perms = ''.join('    <uses-permission android:name="android.permission.%s"/>\n' % p for p in ['POST_NOTIFICATIONS', 'SCHEDULE_EXACT_ALARM', 'RECEIVE_BOOT_COMPLETED', 'VIBRATE'])
+          recv = (
+              '<receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />\n'
+              '<receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">\n'
+              '<intent-filter>\n'
+              '<action android:name="android.intent.action.BOOT_COMPLETED"/>\n'
+              '<action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>\n'
+              '<action android:name="android.intent.action.QUICKBOOT_POWERON"/>\n'
+              '</intent-filter>\n'
+              '</receiver>\n'
+          )
+          s = s.replace('<application', perms + '    <application', 1)
+          s = s.replace('</application>', recv + '</application>', 1)
+          open(M, 'w', encoding='utf-8').write(s)
+          G = 'android/app/build.gradle'
+          if os.path.exists(G):
+              g = open(G, encoding='utf-8').read()
+              if 'coreLibraryDesugaringEnabled' not in g:
+                  g = re.sub(r'(compileOptions\s*\{)', r'\1\n        coreLibraryDesugaringEnabled true', g, count=1)
+                  g += '\ndependencies {\n    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"\n}\n'
+                  open(G, 'w', encoding='utf-8').write(g)
+          PYEOF
+
+      - name: نسخ صوت التنبيه
+        if: hashFiles('sounds/alarm.mp3') != '' && hashFiles('android/app/src/main/AndroidManifest.xml') != ''
+        run: |
+          mkdir -p android/app/src/main/res/raw
+          cp sounds/alarm.mp3 android/app/src/main/res/raw/alarm.mp3
 
       - name: تحميل المكتبات
         if: hashFiles('pubspec.yaml') != ''
