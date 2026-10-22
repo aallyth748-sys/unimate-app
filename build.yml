@@ -37,6 +37,9 @@ jobs:
           flutter create --platforms android --project-name unimate --org com.unimate "$RUNNER_TEMP/scaffold"
           cp -r "$RUNNER_TEMP/scaffold/android" .
 
+      - name: تثبيت برنامج الصور
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
+
       - name: تطبيق أيقونة التطبيق
         if: hashFiles('app_icon.png') != '' && hashFiles('android/app/src/main/AndroidManifest.xml') != ''
         run: |
