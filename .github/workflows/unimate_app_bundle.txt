@@ -1,0 +1,1350 @@
+===FILE: pubspec.yaml ===
+name: unimate
+description: رفيق الجامعة - تطبيق تنظيم الدراسة الجامعية
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: ^0.19.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  flutter_secure_storage: ^9.2.2
+
+dev_dependencies:
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+===FILE: lib/main.dart ===
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'core/store.dart';
+import 'core/theme.dart';
+import 'screens/onboarding.dart';
+import 'shell.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Store.init();
+  runApp(const UniMateApp());
+}
+
+class UniMateApp extends StatelessWidget {
+  const UniMateApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, value, child) {
+        return MaterialApp(
+          title: 'رفيق الجامعة',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light(Store.accent),
+          darkTheme: AppTheme.dark(Store.accent),
+          themeMode: Store.themeMode,
+          locale: const Locale('ar'),
+          supportedLocales: const [Locale('ar')],
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          builder: (context, child) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: child ?? const SizedBox.shrink(),
+          ),
+          home: Store.hasProfile ? const AppShell() : const OnboardingScreen(),
+        );
+      },
+    );
+  }
+}
+===FILE: lib/shell.dart ===
+import 'package:flutter/material.dart';
+import 'screens/home.dart';
+import 'screens/schedule.dart';
+import 'screens/settings.dart';
+import 'screens/subjects.dart';
+
+/// الهيكل الرئيسي: شريط تنقل سفلي بين الأقسام الأربعة.
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
+
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  int _index = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(
+        index: _index,
+        children: const [
+          HomeTab(),
+          ScheduleTab(),
+          SubjectsTab(),
+          SettingsTab(),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _index,
+        onDestinationSelected: (i) => setState(() => _index = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'الرئيسية',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.calendar_month_outlined),
+            selectedIcon: Icon(Icons.calendar_month),
+            label: 'الجدول',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.menu_book_outlined),
+            selectedIcon: Icon(Icons.menu_book),
+            label: 'المواد',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: 'الإعدادات',
+          ),
+        ],
+      ),
+    );
+  }
+}
+===FILE: lib/core/store.dart ===
+import 'dart:convert';
+import 'dart:math';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+
+/// طبقة التخزين: قاعدة بيانات Hive مشفرة.
+/// مفتاح التشفير يُحفظ في مخزن الجهاز الآمن ولا يخرج منه.
+class Store {
+  Store._();
+
+  static const _keyAlias = 'unimate_db_key';
+  static late Box<Map> _box;
+
+  static Future<void> init() async {
+    await Hive.initFlutter();
+    const secure = FlutterSecureStorage();
+    var encoded = await secure.read(key: _keyAlias);
+    if (encoded == null) {
+      final rnd = Random.secure();
+      final bytes = List<int>.generate(32, (_) => rnd.nextInt(256));
+      encoded = base64Encode(bytes);
+      await secure.write(key: _keyAlias, value: encoded);
+    }
+    _box = await Hive.openBox<Map>(
+      'unimate_db',
+      encryptionCipher: HiveAesCipher(base64Decode(encoded)),
+    );
+  }
+
+  static ValueListenable<Box<Map>> get listenable => _box.listenable();
+
+  static String newId() =>
+      DateTime.now().microsecondsSinceEpoch.toRadixString(36) +
+      Random().nextInt(9999).toString();
+
+  // ---------- الملف الشخصي ----------
+  static bool get hasProfile => _box.get('profile') != null;
+
+  static Map<String, dynamic> get profile =>
+      Map<String, dynamic>.from(_box.get('profile') ?? {});
+
+  static Future<void> saveProfile(Map<String, dynamic> p) =>
+      _box.put('profile', p);
+
+  // ---------- الإعدادات ----------
+  static Map<String, dynamic> get _settings =>
+      Map<String, dynamic>.from(_box.get('settings') ?? {});
+
+  static T setting<T>(String key, T fallback) =>
+      (_settings[key] as T?) ?? fallback;
+
+  static Future<void> setSetting(String key, dynamic value) async {
+    final s = _settings;
+    s[key] = value;
+    await _box.put('settings', s);
+  }
+
+  static ThemeMode get themeMode {
+    switch (setting<String>('theme', 'dark')) {
+      case 'light':
+        return ThemeMode.light;
+      case 'system':
+        return ThemeMode.system;
+      default:
+        return ThemeMode.dark;
+    }
+  }
+
+  static Color get accent => Color(setting<int>('accent', 0xFF6C5CE7));
+
+  // ---------- القوائم (مواد، محاضرات، حضور) ----------
+  static List<Map<String, dynamic>> all(String key) {
+    final raw = _box.get(key);
+    if (raw == null) return [];
+    return (raw['items'] as List)
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  static Future<void> upsert(String key, Map<String, dynamic> item) async {
+    final items = all(key);
+    final i = items.indexWhere((e) => e['id'] == item['id']);
+    if (i >= 0) {
+      items[i] = item;
+    } else {
+      items.add(item);
+    }
+    await _box.put(key, {'items': items});
+  }
+
+  static Future<void> remove(String key, String id) async {
+    final items = all(key)..removeWhere((e) => e['id'] == id);
+    await _box.put(key, {'items': items});
+  }
+
+  static Map<String, dynamic>? subject(String id) {
+    for (final s in all('subjects')) {
+      if (s['id'] == id) return s;
+    }
+    return null;
+  }
+
+  static String subjectName(String id) =>
+      (subject(id)?['name'] as String?) ?? 'مادة محذوفة';
+
+  // ---------- الحضور ----------
+  static String? attendanceStatus(String lectureId, String date) {
+    for (final a in all('attendance')) {
+      if (a['lectureId'] == lectureId && a['date'] == date) {
+        return a['status'] as String;
+      }
+    }
+    return null;
+  }
+
+  static Future<void> setAttendance(
+      String lectureId, String date, String? status) {
+    final id = '$lectureId|$date';
+    if (status == null) return remove('attendance', id);
+    return upsert('attendance', {
+      'id': id,
+      'lectureId': lectureId,
+      'date': date,
+      'status': status,
+    });
+  }
+
+  /// نسبة الحضور لمادة (الملغاة لا تُحتسب). تعيد null إذا لا توجد سجلات.
+  static int? attendanceRate(String subjectId) {
+    final lectureIds = all('lectures')
+        .where((l) => l['subjectId'] == subjectId)
+        .map((l) => l['id'])
+        .toSet();
+    var total = 0;
+    var attended = 0;
+    for (final a in all('attendance')) {
+      if (!lectureIds.contains(a['lectureId']) || a['status'] == 'ملغاة') {
+        continue;
+      }
+      total++;
+      if (a['status'] == 'حاضر' || a['status'] == 'متأخر') attended++;
+    }
+    return total == 0 ? null : (attended * 100 ~/ total);
+  }
+
+  // ---------- الحذف المتسلسل ----------
+  static Future<void> deleteLecture(String id) async {
+    for (final a in all('attendance').where((a) => a['lectureId'] == id).toList()) {
+      await remove('attendance', a['id'] as String);
+    }
+    await remove('lectures', id);
+  }
+
+  static Future<void> deleteSubject(String id) async {
+    for (final l in all('lectures').where((l) => l['subjectId'] == id).toList()) {
+      await deleteLecture(l['id'] as String);
+    }
+    await remove('subjects', id);
+  }
+
+  static Future<void> wipe() => _box.clear();
+}
+===FILE: lib/core/util.dart ===
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+
+const dayNames = ['السبت', 'الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'];
+const levelNames = ['الأول', 'الثاني', 'الثالث', 'الرابع'];
+const termNames = ['الترم الأول', 'الترم الثاني'];
+const attendanceStatuses = ['حاضر', 'غائب', 'متأخر', 'ملغاة'];
+const difficultyNames = ['سهل', 'متوسط', 'صعب'];
+const lectureTypes = ['نظري', 'عملي'];
+
+/// فهرس اليوم: السبت = 0 ... الجمعة = 6
+int dayIndexOf(DateTime d) => (d.weekday % 7 + 1) % 7;
+
+String ymd(DateTime d) => DateFormat('yyyy-MM-dd').format(d);
+
+/// تاريخ اليوم المقابل داخل الأسبوع الحالي
+DateTime dateForDayInThisWeek(int dayIndex) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  return today.add(Duration(days: dayIndex - dayIndexOf(today)));
+}
+
+int toMin(String hm) {
+  final parts = hm.split(':');
+  return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+}
+
+TimeOfDay parseTime(String hm) {
+  final parts = hm.split(':');
+  return TimeOfDay(hour: int.parse(parts[0]), minute: int.parse(parts[1]));
+}
+
+String fmtTime(TimeOfDay t) =>
+    '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+===FILE: lib/core/theme.dart ===
+import 'package:flutter/material.dart';
+
+/// ألوان التطبيق وأشكاله. الوضع الفاتح والداكن يتبعان اللون الذي يختاره المستخدم.
+class AppTheme {
+  AppTheme._();
+
+  static ThemeData light(Color accent) => _build(Brightness.light, accent);
+  static ThemeData dark(Color accent) => _build(Brightness.dark, accent);
+
+  static ThemeData _build(Brightness brightness, Color accent) {
+    final isDark = brightness == Brightness.dark;
+    final scheme = ColorScheme.fromSeed(seedColor: accent, brightness: brightness);
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: scheme,
+      scaffoldBackgroundColor: isDark ? const Color(0xFF11121A) : const Color(0xFFF3F4FA),
+      appBarTheme: AppBarTheme(
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        titleTextStyle: TextStyle(
+          fontSize: 24,
+          fontWeight: FontWeight.w900,
+          color: scheme.onSurface,
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: isDark ? const Color(0xFF232637) : const Color(0xFFF7F8FC),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide.none,
+        ),
+      ),
+      navigationBarTheme: const NavigationBarThemeData(
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      ),
+    );
+  }
+}
+===FILE: lib/core/widgets.dart ===
+import 'package:flutter/material.dart';
+
+/// بطاقة موحدة بزوايا دائرية وظل ناعم.
+class AppCard extends StatelessWidget {
+  const AppCard({
+    super.key,
+    required this.child,
+    this.onTap,
+    this.padding = const EdgeInsets.all(18),
+  });
+
+  final Widget child;
+  final VoidCallback? onTap;
+  final EdgeInsets padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF1C1E2C) : Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: theme.colorScheme.outline.withOpacity(0.15)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.3 : 0.06),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(22),
+          onTap: onTap,
+          child: Padding(padding: padding, child: child),
+        ),
+      ),
+    );
+  }
+}
+
+/// عنوان قسم داخل الشاشة.
+class SectionTitle extends StatelessWidget {
+  const SectionTitle(this.text, {super.key});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 12, 4, 10),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 19,
+          fontWeight: FontWeight.w800,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ),
+    );
+  }
+}
+
+/// مربع إحصائية صغير.
+class StatTile extends StatelessWidget {
+  const StatTile({super.key, required this.value, required this.label});
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w900,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(label, textAlign: TextAlign.center),
+        ],
+      ),
+    );
+  }
+}
+===FILE: lib/screens/onboarding.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../shell.dart';
+
+/// شاشة الترحيب وإعداد الملف الشخصي عند أول فتح.
+class OnboardingScreen extends StatefulWidget {
+  const OnboardingScreen({super.key});
+
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
+}
+
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _age = TextEditingController();
+  final _university = TextEditingController();
+  final _faculty = TextEditingController();
+  final _major = TextEditingController();
+  String _level = levelNames[1];
+  String _term = termNames[0];
+  bool _started = false;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _age.dispose();
+    _university.dispose();
+    _faculty.dispose();
+    _major.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    await Store.saveProfile({
+      'name': _name.text.trim(),
+      'age': int.parse(_age.text.trim()),
+      'university': _university.text.trim(),
+      'faculty': _faculty.text.trim(),
+      'major': _major.text.trim(),
+      'level': _level,
+      'term': _term,
+    });
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AppShell()),
+      (_) => false,
+    );
+  }
+
+  String? _required(String? v) =>
+      (v == null || v.trim().isEmpty) ? 'هذا الحقل مطلوب' : null;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_started) return _welcome(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('ملفك الجامعي')),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            TextFormField(
+              controller: _name,
+              decoration: const InputDecoration(labelText: 'الاسم الكامل'),
+              validator: _required,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _age,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'العمر'),
+              validator: (v) {
+                final n = int.tryParse(v ?? '');
+                if (n == null || n < 15 || n > 80) return 'أدخل عمراً صحيحاً';
+                return null;
+              },
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _university,
+              decoration: const InputDecoration(labelText: 'اسم الجامعة'),
+              validator: _required,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _faculty,
+              decoration: const InputDecoration(labelText: 'الكلية'),
+              validator: _required,
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _major,
+              decoration: const InputDecoration(labelText: 'التخصص'),
+              validator: _required,
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _level,
+              decoration: const InputDecoration(labelText: 'المستوى الدراسي'),
+              items: [
+                for (final l in levelNames)
+                  DropdownMenuItem(value: l, child: Text('المستوى $l')),
+              ],
+              onChanged: (v) => setState(() => _level = v!),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              value: _term,
+              decoration: const InputDecoration(labelText: 'الترم الحالي'),
+              items: [
+                for (final t in termNames) DropdownMenuItem(value: t, child: Text(t)),
+              ],
+              onChanged: (v) => setState(() => _term = v!),
+            ),
+            const SizedBox(height: 24),
+            FilledButton(
+              onPressed: _save,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Text('ابدأ رحلتك الجامعية', style: TextStyle(fontSize: 18)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _welcome(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text('🎓', style: TextStyle(fontSize: 80)),
+              const SizedBox(height: 12),
+              Text(
+                'رفيق الجامعة',
+                style: TextStyle(
+                  fontSize: 34,
+                  fontWeight: FontWeight.w900,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'نظّم دراستك، واستثمر وقتك، وحقق هدفك.',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'تعمل بياناتك على جهازك فقط، ولا تحتاج إلى إنترنت.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 36),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => setState(() => _started = true),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Text('ابدأ', style: TextStyle(fontSize: 18)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+===FILE: lib/screens/home.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+
+/// الشاشة الرئيسية: الترحيب وإحصائيات اليوم ومحاضراته.
+class HomeTab extends StatelessWidget {
+  const HomeTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final now = DateTime.now();
+        final p = Store.profile;
+        final name = (p['name'] as String?) ?? '';
+        final firstName = name.isEmpty ? '' : name.split(' ').first;
+        final todayIdx = dayIndexOf(now);
+        final date = ymd(now);
+        final nowMinutes = now.hour * 60 + now.minute;
+
+        final lectures = Store.all('lectures').where((l) => l['day'] == todayIdx).toList()
+          ..sort((a, b) => toMin(a['start'] as String).compareTo(toMin(b['start'] as String)));
+
+        var attended = 0;
+        var absent = 0;
+        var remaining = 0;
+        for (final l in lectures) {
+          final status = Store.attendanceStatus(l['id'] as String, date);
+          if (status == 'حاضر' || status == 'متأخر') attended++;
+          if (status == 'غائب') absent++;
+          if (toMin(l['start'] as String) > nowMinutes) remaining++;
+        }
+
+        return Scaffold(
+          appBar: AppBar(title: Text('أهلاً بك يا $firstName 👋')),
+          body: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: [
+              AppCard(
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 32,
+                      child: Text(
+                        name.isEmpty ? '؟' : name.substring(0, 1),
+                        style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${dayNames[todayIdx]} ${now.day}/${now.month}/${now.year}',
+                            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                          ),
+                          const SizedBox(height: 4),
+                          Text('${p['major'] ?? ''} • ${p['university'] ?? ''}'),
+                          Text('المستوى ${p['level'] ?? ''} • ${p['term'] ?? ''}'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Row(
+                children: [
+                  Expanded(child: StatTile(value: '${lectures.length}', label: 'محاضرات اليوم')),
+                  const SizedBox(width: 10),
+                  Expanded(child: StatTile(value: '$remaining', label: 'متبقية')),
+                  const SizedBox(width: 10),
+                  Expanded(child: StatTile(value: '$attended', label: 'حضرت')),
+                  const SizedBox(width: 10),
+                  Expanded(child: StatTile(value: '$absent', label: 'غائب')),
+                ],
+              ),
+              const SectionTitle('محاضرات اليوم'),
+              if (lectures.isEmpty)
+                const AppCard(
+                  child: Center(child: Text('لا توجد محاضرات اليوم 🎉')),
+                )
+              else
+                for (final l in lectures) _lectureTile(l, date),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _lectureTile(Map<String, dynamic> l, String date) {
+    final status = Store.attendanceStatus(l['id'] as String, date);
+    final color = Color((Store.subject(l['subjectId'] as String)?['color'] as int?) ?? 0xFF6C5CE7);
+    return AppCard(
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 54,
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(6)),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  Store.subjectName(l['subjectId'] as String),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                ),
+                Text('${l['start']} - ${l['end']}  •  ${l['hall'] ?? ''}'),
+              ],
+            ),
+          ),
+          Text(status ?? 'لم يُسجَّل', style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+===FILE: lib/screens/schedule.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+import 'subjects.dart';
+
+/// الجدول الأسبوعي. المحاضرة تتكرر كل أسبوع، والحضور يُسجَّل لكل تاريخ.
+class ScheduleTab extends StatefulWidget {
+  const ScheduleTab({super.key});
+
+  @override
+  State<ScheduleTab> createState() => _ScheduleTabState();
+}
+
+class _ScheduleTabState extends State<ScheduleTab> {
+  late int _day = dayIndexOf(DateTime.now());
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final date = ymd(dateForDayInThisWeek(_day));
+        final lectures = Store.all('lectures').where((l) => l['day'] == _day).toList()
+          ..sort((a, b) => toMin(a['start'] as String).compareTo(toMin(b['start'] as String)));
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('الجدول الدراسي')),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => _openLectureSheet(),
+            icon: const Icon(Icons.add),
+            label: const Text('محاضرة'),
+          ),
+          body: Column(
+            children: [
+              SizedBox(
+                height: 56,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: 7,
+                  separatorBuilder: (context, index) => const SizedBox(width: 8),
+                  itemBuilder: (context, i) => ChoiceChip(
+                    label: Text(dayNames[i]),
+                    selected: _day == i,
+                    onSelected: (v) => setState(() => _day = i),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: lectures.isEmpty
+                    ? const Center(child: Text('لا توجد محاضرات في هذا اليوم'))
+                    : ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          for (final l in lectures) _lectureCard(l, date),
+                        ],
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _lectureCard(Map<String, dynamic> l, String date) {
+    final id = l['id'] as String;
+    final status = Store.attendanceStatus(id, date);
+    return AppCard(
+      onTap: () => _openLectureSheet(existing: l),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            Store.subjectName(l['subjectId'] as String),
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${l['start']} - ${l['end']}  •  ${l['hall'] ?? ''}  •  ${l['type'] ?? ''}',
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final s in attendanceStatuses)
+                ChoiceChip(
+                  label: Text(s),
+                  selected: status == s,
+                  onSelected: (v) => Store.setAttendance(id, date, status == s ? null : s),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openLectureSheet({Map<String, dynamic>? existing}) async {
+    final subjects = Store.all('subjects');
+    if (subjects.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('أضف مادة أولاً من قسم المواد')),
+      );
+      return;
+    }
+
+    var subjectId = (existing?['subjectId'] as String?) ?? subjects.first['id'] as String;
+    var day = (existing?['day'] as int?) ?? _day;
+    var start = (existing?['start'] as String?) ?? '08:00';
+    var end = (existing?['end'] as String?) ?? '09:00';
+    var type = (existing?['type'] as String?) ?? lectureTypes.first;
+    final hall = TextEditingController(text: (existing?['hall'] as String?) ?? '');
+    final doctor = TextEditingController(text: (existing?['doctor'] as String?) ?? '');
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheet) {
+            return Padding(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                0,
+                20,
+                MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      existing == null ? 'محاضرة جديدة' : 'تعديل المحاضرة',
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                    ),
+                    const SizedBox(height: 14),
+                    DropdownButtonFormField<String>(
+                      value: subjectId,
+                      decoration: const InputDecoration(labelText: 'المادة'),
+                      items: [
+                        for (final s in subjects)
+                          DropdownMenuItem(
+                            value: s['id'] as String,
+                            child: Text(s['name'] as String),
+                          ),
+                      ],
+                      onChanged: (v) => setSheet(() => subjectId = v!),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<int>(
+                      value: day,
+                      decoration: const InputDecoration(labelText: 'اليوم'),
+                      items: [
+                        for (var i = 0; i < 7; i++)
+                          DropdownMenuItem(value: i, child: Text(dayNames[i])),
+                      ],
+                      onChanged: (v) => setSheet(() => day = v!),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final t = await showTimePicker(
+                                context: sheetContext,
+                                initialTime: parseTime(start),
+                              );
+                              if (t != null) setSheet(() => start = fmtTime(t));
+                            },
+                            child: Text('من $start'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final t = await showTimePicker(
+                                context: sheetContext,
+                                initialTime: parseTime(end),
+                              );
+                              if (t != null) setSheet(() => end = fmtTime(t));
+                            },
+                            child: Text('إلى $end'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SegmentedButton<String>(
+                      segments: [
+                        for (final t in lectureTypes)
+                          ButtonSegment(value: t, label: Text(t)),
+                      ],
+                      selected: {type},
+                      onSelectionChanged: (s) => setSheet(() => type = s.first),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: hall,
+                      decoration: const InputDecoration(labelText: 'القاعة أو المعمل'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: doctor,
+                      decoration: const InputDecoration(labelText: 'اسم الدكتور'),
+                    ),
+                    const SizedBox(height: 18),
+                    FilledButton(
+                      onPressed: () async {
+                        if (toMin(end) <= toMin(start)) {
+                          ScaffoldMessenger.of(sheetContext).showSnackBar(
+                            const SnackBar(content: Text('وقت النهاية يجب أن يكون بعد البداية')),
+                          );
+                          return;
+                        }
+                        await Store.upsert('lectures', {
+                          'id': existing?['id'] ?? Store.newId(),
+                          'subjectId': subjectId,
+                          'day': day,
+                          'start': start,
+                          'end': end,
+                          'type': type,
+                          'hall': hall.text.trim(),
+                          'doctor': doctor.text.trim(),
+                        });
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: Text('حفظ', style: TextStyle(fontSize: 18)),
+                      ),
+                    ),
+                    if (existing != null)
+                      TextButton(
+                        onPressed: () async {
+                          await Store.deleteLecture(existing['id'] as String);
+                          if (sheetContext.mounted) Navigator.pop(sheetContext);
+                        },
+                        child: const Text('حذف المحاضرة', style: TextStyle(color: Colors.red)),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+    hall.dispose();
+    doctor.dispose();
+  }
+}
+===FILE: lib/screens/subjects.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+
+/// ألوان المواد المتاحة.
+const subjectColors = [
+  0xFF6C5CE7,
+  0xFF0984E3,
+  0xFF00B894,
+  0xFFE17055,
+  0xFFD63031,
+  0xFFF0A500,
+];
+
+/// قائمة المواد الدراسية. المواد لا تحتوي على مواعيد اختبارات (تُضاف لاحقاً في قسم الاختبارات).
+class SubjectsTab extends StatelessWidget {
+  const SubjectsTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final subjects = Store.all('subjects');
+        return Scaffold(
+          appBar: AppBar(title: const Text('المواد الدراسية')),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => openSubjectSheet(context),
+            icon: const Icon(Icons.add),
+            label: const Text('مادة'),
+          ),
+          body: subjects.isEmpty
+              ? const Center(child: Text('لا توجد مواد بعد. أضف أول مادة لتبدأ.'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [for (final s in subjects) _subjectCard(context, s)],
+                ),
+        );
+      },
+    );
+  }
+
+  Widget _subjectCard(BuildContext context, Map<String, dynamic> s) {
+    final color = Color(s['color'] as int);
+    final rate = Store.attendanceRate(s['id'] as String);
+    final details = [
+      if ((s['doctor'] as String? ?? '').isNotEmpty) 'د. ${s['doctor']}',
+      if ((s['difficulty'] as String? ?? '').isNotEmpty) s['difficulty'] as String,
+    ].join('  •  ');
+    return AppCard(
+      onTap: () => openSubjectSheet(context, existing: s),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 60,
+            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(8)),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  s['name'] as String,
+                  style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
+                ),
+                if (details.isNotEmpty) Text(details),
+                const SizedBox(height: 6),
+                Text(rate == null ? 'لا يوجد حضور مسجّل بعد' : 'نسبة الحضور: $rate%'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// نافذة إضافة مادة أو تعديلها.
+Future<void> openSubjectSheet(BuildContext context, {Map<String, dynamic>? existing}) async {
+  final name = TextEditingController(text: (existing?['name'] as String?) ?? '');
+  final doctor = TextEditingController(text: (existing?['doctor'] as String?) ?? '');
+  var difficulty = (existing?['difficulty'] as String?) ?? difficultyNames[1];
+  var color = (existing?['color'] as int?) ?? subjectColors.first;
+
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (sheetContext, setSheet) {
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              20,
+              0,
+              20,
+              MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    existing == null ? 'مادة جديدة' : 'تعديل المادة',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: 'اسم المادة'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: doctor,
+                    decoration: const InputDecoration(labelText: 'اسم الدكتور (اختياري)'),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: difficulty,
+                    decoration: const InputDecoration(labelText: 'الصعوبة'),
+                    items: [
+                      for (final d in difficultyNames)
+                        DropdownMenuItem(value: d, child: Text(d)),
+                    ],
+                    onChanged: (v) => setSheet(() => difficulty = v!),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text('لون المادة', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    children: [
+                      for (final c in subjectColors)
+                        GestureDetector(
+                          onTap: () => setSheet(() => color = c),
+                          child: CircleAvatar(
+                            radius: 18,
+                            backgroundColor: Color(c),
+                            child: color == c
+                                ? const Icon(Icons.check, color: Colors.white)
+                                : null,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    onPressed: () async {
+                      if (name.text.trim().isEmpty) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(content: Text('اسم المادة مطلوب')),
+                        );
+                        return;
+                      }
+                      await Store.upsert('subjects', {
+                        'id': existing?['id'] ?? Store.newId(),
+                        'name': name.text.trim(),
+                        'doctor': doctor.text.trim(),
+                        'difficulty': difficulty,
+                        'color': color,
+                      });
+                      if (sheetContext.mounted) Navigator.pop(sheetContext);
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('حفظ', style: TextStyle(fontSize: 18)),
+                    ),
+                  ),
+                  if (existing != null)
+                    TextButton(
+                      onPressed: () async {
+                        await Store.deleteSubject(existing['id'] as String);
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      },
+                      child: const Text(
+                        'حذف المادة ومحاضراتها',
+                        style: TextStyle(color: Colors.red),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+  name.dispose();
+  doctor.dispose();
+}
+===FILE: lib/screens/settings.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/widgets.dart';
+import 'onboarding.dart';
+import 'subjects.dart';
+
+/// الإعدادات: المظهر، لون التطبيق، الملف الشخصي، مسح البيانات، ومعلومات التطبيق.
+class SettingsTab extends StatelessWidget {
+  const SettingsTab({super.key});
+
+  static const appVersion = '1.0.0';
+  static const developerName = 'سامي الصلاحي';
+  static const developerPhone = '772798471';
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final theme = Store.setting<String>('theme', 'dark');
+        final accent = Store.accent.value;
+        final p = Store.profile;
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('الإعدادات')),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              const SectionTitle('المظهر'),
+              AppCard(
+                child: SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'dark', label: Text('داكن')),
+                    ButtonSegment(value: 'light', label: Text('فاتح')),
+                    ButtonSegment(value: 'system', label: Text('تلقائي')),
+                  ],
+                  selected: {theme},
+                  onSelectionChanged: (s) => Store.setSetting('theme', s.first),
+                ),
+              ),
+              AppCard(
+                child: Wrap(
+                  spacing: 14,
+                  runSpacing: 10,
+                  children: [
+                    for (final c in subjectColors)
+                      GestureDetector(
+                        onTap: () => Store.setSetting('accent', c),
+                        child: CircleAvatar(
+                          radius: 22,
+                          backgroundColor: Color(c),
+                          child: accent == c
+                              ? const Icon(Icons.check, color: Colors.white)
+                              : null,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SectionTitle('الملف الشخصي'),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(p['name'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w800)),
+                    Text('المستوى ${p['level'] ?? ''} • ${p['term'] ?? ''}'),
+                    Text('${p['faculty'] ?? ''} • ${p['major'] ?? ''}'),
+                  ],
+                ),
+              ),
+              const SectionTitle('البيانات'),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('بياناتك محفوظة مشفّرة على هذا الجهاز فقط، ولا تُرسل إلى أي مكان.'),
+                    const SizedBox(height: 12),
+                    FilledButton.tonal(
+                      style: FilledButton.styleFrom(foregroundColor: Colors.red),
+                      onPressed: () => _confirmReset(context),
+                      child: const Text('مسح كل البيانات'),
+                    ),
+                  ],
+                ),
+              ),
+              const SectionTitle('حول التطبيق'),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('رفيق الجامعة', style: TextStyle(fontWeight: FontWeight.w900)),
+                    Text('الإصدار $appVersion'),
+                    Text('تصميم وتطوير: $developerName'),
+                    Text('للتواصل: $developerPhone'),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmReset(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('مسح كل البيانات؟'),
+        content: const Text('سيتم حذف الملف الشخصي والمواد والمحاضرات والحضور نهائياً.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('نعم، امسح')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await Store.wipe();
+    if (!context.mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+      (_) => false,
+    );
+  }
+}
