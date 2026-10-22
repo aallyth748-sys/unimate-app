@@ -198,6 +198,8 @@ class Store {
     await _box.put('settings', s);
   }
 
+  static Map<String, dynamic> get allSettings => _settings;
+
   static ThemeMode get themeMode {
     switch (setting<String>('theme', 'dark')) {
       case 'light':
@@ -314,6 +316,33 @@ class Store {
       await deleteLecture(l['id'] as String);
     }
     await remove('subjects', id);
+    await remove('notes', id);
+  }
+
+  // ---------- النسخ الاحتياطي ----------
+  static const backupKeys = ['subjects', 'lectures', 'attendance', 'tasks', 'exams', 'notes'];
+
+  static Map<String, dynamic> exportData() => {
+        'version': 1,
+        'profile': profile,
+        'settings': _settings,
+        for (final key in backupKeys) key: all(key),
+      };
+
+  static Future<void> restore(Map<String, dynamic> data) async {
+    await _box.clear();
+    final profileData = data['profile'];
+    if (profileData is Map) {
+      await _box.put('profile', Map<String, dynamic>.from(profileData));
+    }
+    final settingsData = data['settings'];
+    if (settingsData is Map) {
+      await _box.put('settings', Map<String, dynamic>.from(settingsData));
+    }
+    for (final key in backupKeys) {
+      final items = data[key];
+      await _box.put(key, {'items': items is List ? items : []});
+    }
   }
 
   static Future<void> wipe() => _box.clear();
@@ -700,6 +729,7 @@ import '../core/util.dart';
 import '../core/widgets.dart';
 import 'exams.dart';
 import 'pomodoro.dart';
+import 'stats.dart';
 
 /// الشاشة الرئيسية: الملف، الإحصائيات، محاضرات اليوم، والاختبارات القادمة.
 class HomeTab extends StatelessWidget {
@@ -783,6 +813,16 @@ class HomeTab extends StatelessWidget {
                     () => Navigator.push(
                       context,
                       MaterialPageRoute(builder: (_) => const PomodoroScreen()),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  _quickAction(
+                    context,
+                    Icons.bar_chart,
+                    'الإحصائيات',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const StatsScreen()),
                     ),
                   ),
                 ],
@@ -1164,6 +1204,7 @@ import 'package:flutter/material.dart';
 import '../core/store.dart';
 import '../core/util.dart';
 import '../core/widgets.dart';
+import 'notes.dart';
 
 /// ألوان المواد المتاحة.
 const subjectColors = [
@@ -1275,6 +1316,17 @@ Future<void> openSubjectSheet(BuildContext context, {Map<String, dynamic>? exist
                     controller: name,
                     decoration: const InputDecoration(labelText: 'اسم المادة'),
                   ),
+                  if (existing != null) ...[
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.edit_note),
+                      label: const Text('ملاحظات المادة'),
+                      onPressed: () {
+                        Navigator.pop(sheetContext);
+                        openNotesScreen(context, existing['id'] as String);
+                      },
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   TextField(
                     controller: doctor,
@@ -1361,6 +1413,7 @@ import '../core/photo.dart';
 import '../core/store.dart';
 import '../core/util.dart';
 import '../core/widgets.dart';
+import 'backup.dart';
 import 'onboarding.dart';
 import 'subjects.dart';
 
@@ -1489,6 +1542,15 @@ class SettingsTab extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text('بياناتك محفوظة مشفّرة على هذا الجهاز فقط، ولا تُرسل إلى أي مكان.'),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.backup_outlined),
+                      label: const Text('نسخ احتياطي واستعادة'),
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const BackupScreen()),
+                      ),
+                    ),
                     const SizedBox(height: 12),
                     FilledButton.tonal(
                       style: FilledButton.styleFrom(foregroundColor: Colors.red),
@@ -2181,6 +2243,316 @@ class _PomodoroScreenState extends State<PomodoroScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+===FILE: lib/screens/notes.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+
+/// يفتح شاشة ملاحظات مادة معيّنة.
+Future<void> openNotesScreen(BuildContext context, String subjectId) {
+  return Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => NotesScreen(subjectId: subjectId)),
+  );
+}
+
+/// ملاحظات حرة لكل مادة، تُحفظ تلقائياً أثناء الكتابة.
+class NotesScreen extends StatefulWidget {
+  const NotesScreen({super.key, required this.subjectId});
+
+  final String subjectId;
+
+  @override
+  State<NotesScreen> createState() => _NotesScreenState();
+}
+
+class _NotesScreenState extends State<NotesScreen> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    final match = Store.all('notes').where((n) => n['subjectId'] == widget.subjectId).toList();
+    _controller = TextEditingController(
+      text: match.isEmpty ? '' : ((match.first['text'] as String?) ?? ''),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _save(String text) {
+    Store.upsert('notes', {
+      'id': widget.subjectId,
+      'subjectId': widget.subjectId,
+      'text': text,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          'ملاحظات: ${Store.subjectName(widget.subjectId)}',
+          style: const TextStyle(fontSize: 18),
+        ),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            const Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: Text('تُحفظ تلقائياً', style: TextStyle(fontSize: 13)),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                onChanged: _save,
+                maxLines: null,
+                expands: true,
+                textAlignVertical: TextAlignVertical.top,
+                decoration: const InputDecoration(
+                  hintText: 'اكتب ملاحظاتك هنا...',
+                  alignLabelWithHint: true,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+===FILE: lib/screens/stats.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/widgets.dart';
+
+/// الإحصائيات: الحضور العام، ونسبة كل مادة، والمهام المنجزة.
+class StatsScreen extends StatelessWidget {
+  const StatsScreen({super.key});
+
+  /// نسبة الحضور العامة عبر كل المواد (الملغاة لا تُحتسب). تعيد null إذا لا توجد سجلات.
+  int? _overallAttendance() {
+    final subjectOfLecture = {
+      for (final l in Store.all('lectures')) l['id']: l['subjectId'],
+    };
+    var total = 0;
+    var attended = 0;
+    for (final a in Store.all('attendance')) {
+      if (!subjectOfLecture.containsKey(a['lectureId']) || a['status'] == 'ملغاة') {
+        continue;
+      }
+      total++;
+      if (a['status'] == 'حاضر' || a['status'] == 'متأخر') attended++;
+    }
+    return total == 0 ? null : attended * 100 ~/ total;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final subjects = Store.all('subjects');
+        final tasks = Store.all('tasks');
+        final done = tasks.where((t) => t['status'] == 'مكتملة').length;
+        final overall = _overallAttendance();
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('الإحصائيات')),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              Row(
+                children: [
+                  Expanded(child: StatTile(value: '${subjects.length}', label: 'المواد')),
+                  const SizedBox(width: 10),
+                  Expanded(child: StatTile(value: '$done/${tasks.length}', label: 'المهام المنجزة')),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: StatTile(
+                      value: overall == null ? '—' : '$overall%',
+                      label: 'الحضور العام',
+                    ),
+                  ),
+                ],
+              ),
+              const SectionTitle('نسبة الحضور لكل مادة'),
+              if (subjects.isEmpty)
+                const AppCard(child: Center(child: Text('لا توجد مواد بعد')))
+              else
+                for (final s in subjects) _subjectRow(s),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _subjectRow(Map<String, dynamic> s) {
+    final rate = Store.attendanceRate(s['id'] as String);
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            s['name'] as String,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+            value: rate == null ? 0.0 : rate / 100,
+            minHeight: 8,
+          ),
+          const SizedBox(height: 6),
+          Text(rate == null ? 'لا يوجد حضور مسجّل بعد' : 'الحضور: $rate%'),
+        ],
+      ),
+    );
+  }
+}
+===FILE: lib/screens/backup.dart ===
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../core/store.dart';
+import '../core/widgets.dart';
+
+/// النسخ الاحتياطي: تنسخ بياناتك كنص إلى الحافظة، وتستعيدها بلصق النص.
+class BackupScreen extends StatefulWidget {
+  const BackupScreen({super.key});
+
+  @override
+  State<BackupScreen> createState() => _BackupScreenState();
+}
+
+class _BackupScreenState extends State<BackupScreen> {
+  final _input = TextEditingController();
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  void _message(String text) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  Future<void> _copyBackup() async {
+    final text = jsonEncode(Store.exportData());
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    _message('تم نسخ البيانات. احفظها في مكان آمن مثل رسالة لنفسك.');
+  }
+
+  Future<void> _paste() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text != null) _input.text = text;
+  }
+
+  Future<void> _restore() async {
+    Map<String, dynamic>? data;
+    try {
+      data = Map<String, dynamic>.from(jsonDecode(_input.text.trim()) as Map);
+    } catch (_) {
+      data = null;
+    }
+    if (!mounted) return;
+    if (data == null || data['version'] != 1) {
+      _message('النص غير صحيح. تأكد أنك لصقت النسخة الاحتياطية كاملة.');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('استعادة النسخة؟'),
+        content: const Text('ستُستبدل البيانات الحالية بالبيانات الموجودة في النسخة.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('استعادة')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await Store.restore(data);
+    if (!mounted) return;
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('النسخ الاحتياطي')),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const SectionTitle('نسخ احتياطي'),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'تنسخ هذه الخطوة كل بياناتك كنص. احفظه في رسالة لنفسك أو ملف، لتستعيده لاحقاً أو على هاتف آخر.',
+                ),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: _copyBackup,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Text('نسخ البيانات', style: TextStyle(fontSize: 17)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SectionTitle('استعادة'),
+          AppCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('الصق النص الذي حفظته، ثم اضغط استعادة.'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _input,
+                  maxLines: 5,
+                  decoration: const InputDecoration(hintText: 'الصق النسخة هنا'),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _paste,
+                        child: const Text('لصق من الحافظة'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _restore,
+                        child: const Text('استعادة'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
