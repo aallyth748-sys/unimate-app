@@ -18,6 +18,8 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   image_picker: ^1.1.2
   url_launcher: ^6.3.0
+  flutter_local_notifications: ^17.2.4
+  timezone: ^0.9.4
 
 dev_dependencies:
   flutter_lints: ^3.0.0
@@ -28,6 +30,7 @@ flutter:
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'core/store.dart';
+import 'core/notifications.dart';
 import 'core/theme.dart';
 import 'screens/onboarding.dart';
 import 'shell.dart';
@@ -35,6 +38,9 @@ import 'shell.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Store.init();
+  await Notifications.init();
+  Notifications.watchStore();
+  Notifications.rescheduleAll();
   runApp(const UniMateApp());
 }
 
@@ -1549,6 +1555,41 @@ class SettingsTab extends StatelessWidget {
                   ],
                 ),
               ),
+              const SectionTitle('التنبيهات'),
+              AppCard(
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('تفعيل التنبيهات'),
+                  subtitle: const Text('تذكير قبل المحاضرات والاختبارات والمهام'),
+                  value: Store.setting<bool>('alerts', true),
+                  onChanged: (v) => Store.setSetting('alerts', v),
+                ),
+              ),
+              AppCard(
+                child: DropdownButtonFormField<int>(
+                  value: Store.setting<int>('lectureLead', 10),
+                  decoration: const InputDecoration(labelText: 'التنبيه قبل المحاضرة'),
+                  items: [
+                    for (final m in const [5, 10, 15, 30])
+                      DropdownMenuItem(value: m, child: Text('$m دقيقة قبلها')),
+                  ],
+                  onChanged: (v) => Store.setSetting('lectureLead', v),
+                ),
+              ),
+              AppCard(
+                child: DropdownButtonFormField<int>(
+                  value: Store.setting<int>('taskHour', 8),
+                  decoration: const InputDecoration(labelText: 'وقت تنبيه المهام في يوم موعدها'),
+                  items: [
+                    for (final h in const [6, 7, 8, 9, 10, 12, 18, 20])
+                      DropdownMenuItem(
+                        value: h,
+                        child: Text('الساعة ${h <= 12 ? h : h - 12} ${h < 12 ? 'صباحاً' : 'مساءً'}'),
+                      ),
+                  ],
+                  onChanged: (v) => Store.setSetting('taskHour', v),
+                ),
+              ),
               const SectionTitle('البيانات'),
               AppCard(
                 child: Column(
@@ -2818,4 +2859,177 @@ class _CalendarScreenState extends State<CalendarScreen> {
       },
     );
   }
+}
+===FILE: lib/core/notifications.dart ===
+import 'package:flutter/foundation.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest_all.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+import 'store.dart';
+import 'util.dart';
+
+/// التنبيهات المحلية: تعمل بدون إنترنت، وتستخدم صوت التنبيه الافتراضي (alarm)
+/// الذي يرفعه المستخدم في مجلد sounds بالمستودع.
+class Notifications {
+  Notifications._();
+
+  static final _plugin = FlutterLocalNotificationsPlugin();
+  static const _channelId = 'unimate_alerts';
+  static const _channelName = 'تنبيهات رفيق الطالب الجامعي';
+  static const _soundName = 'alarm';
+  static bool _ready = false;
+  static ValueListenable<dynamic>? _watcher;
+
+  static Future<void> init() async {
+    tzdata.initializeTimeZones();
+    tz.setLocalLocation(tz.getLocation('Asia/Aden'));
+
+    const settings = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    );
+    await _plugin.initialize(settings);
+
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    final channel = AndroidNotificationChannel(
+      _channelId,
+      _channelName,
+      importance: Importance.max,
+      sound: const RawResourceAndroidNotificationSound(_soundName),
+      playSound: true,
+    );
+    await android?.createNotificationChannel(channel);
+    await android?.requestNotificationsPermission();
+    await android?.requestExactAlarmsPermission();
+    _ready = true;
+  }
+
+  /// يعيد جدولة كل التنبيهات من البيانات الحالية. يُستدعى عند كل تغيير.
+  static void watchStore() {
+    _watcher = Store.listenable;
+    _watcher!.addListener(rescheduleAll);
+  }
+
+  static Future<void> rescheduleAll() async {
+    if (!_ready) return;
+    await _plugin.cancelAll();
+    if (Store.setting<bool>('alerts', true) == false) return;
+
+    final now = tz.TZDateTime.now(tz.local);
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _channelId,
+        _channelName,
+        importance: Importance.max,
+        priority: Priority.high,
+        sound: const RawResourceAndroidNotificationSound(_soundName),
+        playSound: true,
+      ),
+    );
+
+    // المحاضرات: تتكرر أسبوعياً، قبل بدايتها بالمدة التي يختارها المستخدم.
+    final lead = Store.setting<int>('lectureLead', 10);
+    for (final l in Store.all('lectures')) {
+      final minutes = toMin(l['start'] as String) - lead;
+      if (minutes < 0) continue;
+      final when = _nextWeekly(l['day'] as int, minutes);
+      await _plugin.zonedSchedule(
+        _idOf('lec|${l['id']}'),
+        'محاضرة بعد $lead دقيقة',
+        '${Store.subjectName(l['subjectId'] as String)} - ${l['start']}',
+        when,
+        details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents: DateTimeComponents.dayOfWeekAndTime,
+      );
+    }
+
+    // الاختبارات: قبلها بساعة، ويوم قبلها الساعة 9 صباحاً.
+    for (final e in Store.all('exams')) {
+      final date = DateTime.parse(e['date'] as String);
+      final t = toMin(e['time'] as String);
+      final examAt = tz.TZDateTime(
+        tz.local,
+        date.year,
+        date.month,
+        date.day,
+        t ~/ 60,
+        t % 60,
+      );
+      final name = Store.subjectName(e['subjectId'] as String);
+      await _once(
+        _idOf('exam1|${e['id']}'),
+        'اختبار بعد ساعة',
+        '$name - ${e['type']}',
+        examAt.subtract(const Duration(hours: 1)),
+        details,
+        now,
+      );
+      await _once(
+        _idOf('exam2|${e['id']}'),
+        'اختبار غداً',
+        '$name - ${e['type']} الساعة ${e['time']}',
+        tz.TZDateTime(tz.local, date.year, date.month, date.day - 1, 9),
+        details,
+        now,
+      );
+    }
+
+    // المهام غير المكتملة: في الساعة التي يختارها المستخدم من يوم موعدها.
+    for (final t in Store.all('tasks')) {
+      if (t['status'] == 'مكتملة') continue;
+      final due = DateTime.parse(t['due'] as String);
+      await _once(
+        _idOf('task|${t['id']}'),
+        'مهمة اليوم',
+        t['title'] as String,
+        tz.TZDateTime(tz.local, due.year, due.month, due.day, Store.setting<int>('taskHour', 8)),
+        details,
+        now,
+      );
+    }
+  }
+
+  static Future<void> _once(
+    int id,
+    String title,
+    String body,
+    tz.TZDateTime when,
+    NotificationDetails details,
+    tz.TZDateTime now,
+  ) async {
+    if (!when.isAfter(now)) return;
+    await _plugin.zonedSchedule(
+      id,
+      title,
+      body,
+      when,
+      details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
+
+  /// أقرب موعد أسبوعي لليوم المحدد (السبت = 0) والدقائق المحددة.
+  static tz.TZDateTime _nextWeekly(int dayIdx, int minutes) {
+    final weekday = (dayIdx + 5) % 7 + 1; // تحويل إلى ترقيم Dart (الإثنين = 1)
+    final now = tz.TZDateTime.now(tz.local);
+    var d = tz.TZDateTime(
+      tz.local,
+      now.year,
+      now.month,
+      now.day,
+      minutes ~/ 60,
+      minutes % 60,
+    );
+    while (d.weekday != weekday || !d.isAfter(now)) {
+      d = d.add(const Duration(days: 1));
+    }
+    return d;
+  }
+
+  static int _idOf(String key) => key.hashCode & 0x3fffffff;
 }
