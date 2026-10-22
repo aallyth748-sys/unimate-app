@@ -729,6 +729,7 @@ import '../core/util.dart';
 import '../core/widgets.dart';
 import 'exams.dart';
 import 'pomodoro.dart';
+import 'calendar.dart';
 import 'stats.dart';
 
 /// الشاشة الرئيسية: الملف، الإحصائيات، محاضرات اليوم، والاختبارات القادمة.
@@ -768,7 +769,19 @@ class HomeTab extends StatelessWidget {
           ..sort((a, b) => (a['date'] as String).compareTo(b['date'] as String));
 
         return Scaffold(
-          appBar: AppBar(title: Text('أهلاً بك يا $firstName 👋')),
+          appBar: AppBar(
+            title: Text('أهلاً بك يا $firstName 👋'),
+            actions: [
+              IconButton(
+                tooltip: 'التقويم',
+                icon: const Icon(Icons.calendar_month),
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const CalendarScreen()),
+                ),
+              ),
+            ],
+          ),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
             children: [
@@ -2554,6 +2567,255 @@ class _BackupScreenState extends State<BackupScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+===FILE: lib/screens/calendar.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+
+const _monthNames = [
+  'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+  'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
+];
+
+/// أحرف أيام الأسبوع، بالترتيب نفسه: السبت أولاً.
+const _shortDays = ['س', 'ح', 'ن', 'ث', 'ر', 'خ', 'ج'];
+
+/// التقويم: شهر كامل، وكل يوم فيه نقاط تدل على المحاضرات والاختبارات والمهام.
+class CalendarScreen extends StatefulWidget {
+  const CalendarScreen({super.key});
+
+  @override
+  State<CalendarScreen> createState() => _CalendarScreenState();
+}
+
+class _CalendarScreenState extends State<CalendarScreen> {
+  late DateTime _month;
+  late DateTime _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    final now = DateTime.now();
+    _selected = DateTime(now.year, now.month, now.day);
+    _month = DateTime(now.year, now.month, 1);
+  }
+
+  void _shiftMonth(int delta) {
+    setState(() {
+      _month = DateTime(_month.year, _month.month + delta, 1);
+    });
+  }
+
+  Widget _dot(Color c) => Container(
+        width: 6,
+        height: 6,
+        margin: const EdgeInsets.symmetric(horizontal: 1),
+        decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+      );
+
+  Widget _cell(
+    int day,
+    int daysInMonth,
+    List<Map<String, dynamic>> lectures,
+    List<Map<String, dynamic>> exams,
+    List<Map<String, dynamic>> tasks,
+  ) {
+    if (day < 1 || day > daysInMonth) return const SizedBox.shrink();
+    final date = DateTime(_month.year, _month.month, day);
+    final key = ymd(date);
+    final isSelected = ymd(_selected) == key;
+    final hasLecture = lectures.any((l) => l['day'] == dayIndexOf(date));
+    final hasExam = exams.any((e) => e['date'] == key);
+    final hasTask = tasks.any((t) => t['due'] == key);
+    final primary = Theme.of(context).colorScheme.primary;
+
+    return GestureDetector(
+      onTap: () => setState(() => _selected = date),
+      child: Container(
+        margin: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: isSelected ? primary : null,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              '$day',
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                color: isSelected ? Colors.white : null,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (hasLecture) _dot(Colors.blue),
+                if (hasExam) _dot(Colors.red),
+                if (hasTask) _dot(Colors.green),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _events(
+    List<Map<String, dynamic>> lectures,
+    List<Map<String, dynamic>> exams,
+    List<Map<String, dynamic>> tasks,
+  ) {
+    final key = ymd(_selected);
+    final dayLectures = lectures.where((l) => l['day'] == dayIndexOf(_selected)).toList()
+      ..sort((a, b) => toMin(a['start'] as String).compareTo(toMin(b['start'] as String)));
+    final dayExams = exams.where((e) => e['date'] == key).toList();
+    final dayTasks = tasks.where((t) => t['due'] == key).toList();
+
+    if (dayLectures.isEmpty && dayExams.isEmpty && dayTasks.isEmpty) {
+      return [
+        const AppCard(child: Center(child: Text('لا توجد أحداث في هذا اليوم'))),
+      ];
+    }
+
+    return [
+      for (final l in dayLectures)
+        AppCard(
+          child: Row(
+            children: [
+              const Icon(Icons.school, color: Colors.blue),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      Store.subjectName(l['subjectId'] as String),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                    ),
+                    Text('${l['start']} - ${l['end']}  •  ${l['type'] ?? ''}'),
+                  ],
+                ),
+              ),
+              Text(Store.attendanceStatus(l['id'] as String, key) ?? 'لم يُسجَّل'),
+            ],
+          ),
+        ),
+      for (final e in dayExams)
+        AppCard(
+          child: Row(
+            children: [
+              const Icon(Icons.event_note, color: Colors.red),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      Store.subjectName(e['subjectId'] as String),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                    ),
+                    Text(
+                      '${e['type']}  •  ${e['kind'] ?? ''}  •  ${e['time'] ?? ''}',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      for (final t in dayTasks)
+        AppCard(
+          child: Row(
+            children: [
+              const Icon(Icons.task_alt, color: Colors.green),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  t['title'] as String,
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                ),
+              ),
+              Text('مهمة • ${t['status']}'),
+            ],
+          ),
+        ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final lectures = Store.all('lectures');
+        final exams = Store.all('exams');
+        final tasks = Store.all('tasks');
+        final daysInMonth = DateTime(_month.year, _month.month + 1, 0).day;
+        final offset = dayIndexOf(_month);
+        final rows = (offset + daysInMonth + 6) ~/ 7 * 7;
+
+        return Scaffold(
+          appBar: AppBar(title: const Text('التقويم')),
+          body: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              AppCard(
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.chevron_right),
+                          onPressed: () => _shiftMonth(-1),
+                        ),
+                        Expanded(
+                          child: Text(
+                            '${_monthNames[_month.month - 1]} ${_month.year}',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.chevron_left),
+                          onPressed: () => _shiftMonth(1),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        for (final d in _shortDays)
+                          Expanded(
+                            child: Center(
+                              child: Text(d, style: const TextStyle(fontWeight: FontWeight.w800)),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    GridView.count(
+                      crossAxisCount: 7,
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: [
+                        for (var i = 0; i < rows; i++)
+                          _cell(i - offset + 1, daysInMonth, lectures, exams, tasks),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              SectionTitle('أحداث ${fmtDay(_selected)}'),
+              ..._events(lectures, exams, tasks),
+            ],
+          ),
+        );
+      },
     );
   }
 }
