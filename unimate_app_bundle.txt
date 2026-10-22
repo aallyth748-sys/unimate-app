@@ -1,6 +1,6 @@
 ===FILE: pubspec.yaml ===
 name: unimate
-description: رفيق الجامعة - تطبيق تنظيم الدراسة الجامعية
+description: رفيق الطالب الجامعي - تطبيق تنظيم الدراسة الجامعية
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -16,6 +16,8 @@ dependencies:
   hive: ^2.2.3
   hive_flutter: ^1.1.0
   flutter_secure_storage: ^9.2.2
+  image_picker: ^1.1.2
+  url_launcher: ^6.3.0
 
 dev_dependencies:
   flutter_lints: ^3.0.0
@@ -45,7 +47,7 @@ class UniMateApp extends StatelessWidget {
       valueListenable: Store.listenable,
       builder: (context, value, child) {
         return MaterialApp(
-          title: 'رفيق الجامعة',
+          title: 'رفيق الطالب الجامعي',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.light(Store.accent),
           darkTheme: AppTheme.dark(Store.accent),
@@ -73,8 +75,9 @@ import 'screens/home.dart';
 import 'screens/schedule.dart';
 import 'screens/settings.dart';
 import 'screens/subjects.dart';
+import 'screens/tasks.dart';
 
-/// الهيكل الرئيسي: شريط تنقل سفلي بين الأقسام الأربعة.
+/// الهيكل الرئيسي: شريط تنقل سفلي بين الأقسام الخمسة.
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -94,6 +97,7 @@ class _AppShellState extends State<AppShell> {
           HomeTab(),
           ScheduleTab(),
           SubjectsTab(),
+          TasksTab(),
           SettingsTab(),
         ],
       ),
@@ -115,6 +119,11 @@ class _AppShellState extends State<AppShell> {
             icon: Icon(Icons.menu_book_outlined),
             selectedIcon: Icon(Icons.menu_book),
             label: 'المواد',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.task_alt_outlined),
+            selectedIcon: Icon(Icons.task_alt),
+            label: 'المهام',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),
@@ -173,6 +182,9 @@ class Store {
   static Future<void> saveProfile(Map<String, dynamic> p) =>
       _box.put('profile', p);
 
+  static Future<void> updateProfile(Map<String, dynamic> changes) =>
+      _box.put('profile', {...profile, ...changes});
+
   // ---------- الإعدادات ----------
   static Map<String, dynamic> get _settings =>
       Map<String, dynamic>.from(_box.get('settings') ?? {});
@@ -198,6 +210,21 @@ class Store {
   }
 
   static Color get accent => Color(setting<int>('accent', 0xFF6C5CE7));
+
+  // ---------- تواريخ الفصول الدراسية ----------
+  static Map<String, dynamic> get termRanges =>
+      Map<String, dynamic>.from((_settings['termRanges'] as Map?) ?? {});
+
+  static Map<String, dynamic>? termRange(String level, String term) {
+    final r = termRanges['$level|$term'];
+    return r == null ? null : Map<String, dynamic>.from(r as Map);
+  }
+
+  static Future<void> setTermRange(String level, String term, String start, String end) async {
+    final all = termRanges;
+    all['$level|$term'] = {'start': start, 'end': end};
+    await setSetting('termRanges', all);
+  }
 
   // ---------- القوائم (مواد، محاضرات، حضور) ----------
   static List<Map<String, dynamic>> all(String key) {
@@ -301,11 +328,15 @@ const termNames = ['الترم الأول', 'الترم الثاني'];
 const attendanceStatuses = ['حاضر', 'غائب', 'متأخر', 'ملغاة'];
 const difficultyNames = ['سهل', 'متوسط', 'صعب'];
 const lectureTypes = ['نظري', 'عملي'];
+const examTypes = ['نصف الترم', 'نهاية الترم'];
+const taskStatuses = ['لم تبدأ', 'قيد التنفيذ', 'مكتملة'];
 
 /// فهرس اليوم: السبت = 0 ... الجمعة = 6
 int dayIndexOf(DateTime d) => (d.weekday % 7 + 1) % 7;
 
 String ymd(DateTime d) => DateFormat('yyyy-MM-dd').format(d);
+
+String fmtDay(DateTime d) => DateFormat('d/M/yyyy').format(d);
 
 /// تاريخ اليوم المقابل داخل الأسبوع الحالي
 DateTime dateForDayInThisWeek(int dayIndex) {
@@ -465,6 +496,7 @@ class StatTile extends StatelessWidget {
 }
 ===FILE: lib/screens/onboarding.dart ===
 import 'package:flutter/material.dart';
+import '../core/photo.dart';
 import '../core/store.dart';
 import '../core/util.dart';
 import '../shell.dart';
@@ -486,6 +518,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _major = TextEditingController();
   String _level = levelNames[1];
   String _term = termNames[0];
+  String? _photo;
   bool _started = false;
 
   @override
@@ -498,6 +531,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
+  Future<void> _pickPhoto() async {
+    final p = await pickProfilePhoto();
+    if (p != null) setState(() => _photo = p);
+  }
+
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     await Store.saveProfile({
@@ -508,6 +546,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       'major': _major.text.trim(),
       'level': _level,
       'term': _term,
+      'photo': _photo,
     });
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
@@ -529,6 +568,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         child: ListView(
           padding: const EdgeInsets.all(20),
           children: [
+            Center(child: ProfileAvatar(photo: _photo, name: _name.text, radius: 46)),
+            Center(
+              child: TextButton.icon(
+                onPressed: _pickPhoto,
+                icon: const Icon(Icons.photo_camera_outlined),
+                label: Text(_photo == null ? 'إضافة صورة (اختياري)' : 'تغيير الصورة'),
+              ),
+            ),
+            const SizedBox(height: 12),
             TextFormField(
               controller: _name,
               decoration: const InputDecoration(labelText: 'الاسم الكامل'),
@@ -608,7 +656,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               const Text('🎓', style: TextStyle(fontSize: 80)),
               const SizedBox(height: 12),
               Text(
-                'رفيق الجامعة',
+                'رفيق الطالب الجامعي',
                 style: TextStyle(
                   fontSize: 34,
                   fontWeight: FontWeight.w900,
@@ -646,11 +694,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 ===FILE: lib/screens/home.dart ===
 import 'package:flutter/material.dart';
+import '../core/photo.dart';
 import '../core/store.dart';
 import '../core/util.dart';
 import '../core/widgets.dart';
+import 'exams.dart';
+import 'pomodoro.dart';
 
-/// الشاشة الرئيسية: الترحيب وإحصائيات اليوم ومحاضراته.
+/// الشاشة الرئيسية: الملف، الإحصائيات، محاضرات اليوم، والاختبارات القادمة.
 class HomeTab extends StatelessWidget {
   const HomeTab({super.key});
 
@@ -680,6 +731,12 @@ class HomeTab extends StatelessWidget {
           if (toMin(l['start'] as String) > nowMinutes) remaining++;
         }
 
+        final today = DateTime(now.year, now.month, now.day);
+        final upcomingExams = Store.all('exams')
+            .where((e) => !DateTime.parse(e['date'] as String).isBefore(today))
+            .toList()
+          ..sort((a, b) => (a['date'] as String).compareTo(b['date'] as String));
+
         return Scaffold(
           appBar: AppBar(title: Text('أهلاً بك يا $firstName 👋')),
           body: ListView(
@@ -688,20 +745,14 @@ class HomeTab extends StatelessWidget {
               AppCard(
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      radius: 32,
-                      child: Text(
-                        name.isEmpty ? '؟' : name.substring(0, 1),
-                        style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
-                      ),
-                    ),
+                    ProfileAvatar(photo: p['photo'] as String?, name: name, radius: 32),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '${dayNames[todayIdx]} ${now.day}/${now.month}/${now.year}',
+                            '${dayNames[todayIdx]} ${fmtDay(now)}',
                             style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
                           ),
                           const SizedBox(height: 4),
@@ -712,6 +763,29 @@ class HomeTab extends StatelessWidget {
                     ),
                   ],
                 ),
+              ),
+              Row(
+                children: [
+                  _quickAction(
+                    context,
+                    Icons.event_note,
+                    'الاختبارات',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ExamsScreen()),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  _quickAction(
+                    context,
+                    Icons.timer_outlined,
+                    'مؤقت المذاكرة',
+                    () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const PomodoroScreen()),
+                    ),
+                  ),
+                ],
               ),
               Row(
                 children: [
@@ -731,10 +805,44 @@ class HomeTab extends StatelessWidget {
                 )
               else
                 for (final l in lectures) _lectureTile(l, date),
+              const SectionTitle('الاختبارات القادمة'),
+              if (upcomingExams.isEmpty)
+                const AppCard(
+                  child: Center(child: Text('لا توجد اختبارات قادمة')),
+                )
+              else
+                for (final e in upcomingExams.take(3)) _examTile(context, e),
             ],
           ),
         );
       },
+    );
+  }
+
+  Widget _quickAction(
+      BuildContext context, IconData icon, String label, VoidCallback onTap) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Material(
+          color: Theme.of(context).colorScheme.primaryContainer,
+          borderRadius: BorderRadius.circular(18),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Column(
+                children: [
+                  Icon(icon),
+                  const SizedBox(height: 6),
+                  Text(label, style: const TextStyle(fontWeight: FontWeight.w800)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -763,6 +871,30 @@ class HomeTab extends StatelessWidget {
             ),
           ),
           Text(status ?? 'لم يُسجَّل', style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+
+  Widget _examTile(BuildContext context, Map<String, dynamic> e) {
+    final d = DateTime.parse(e['date'] as String);
+    return AppCard(
+      child: Row(
+        children: [
+          Icon(Icons.event_note, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  Store.subjectName(e['subjectId'] as String),
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                ),
+                Text('${e['type']}  •  ${e['kind'] ?? ''}  •  ${fmtDay(d)}  •  ${e['time'] ?? ''}'),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1224,12 +1356,15 @@ Future<void> openSubjectSheet(BuildContext context, {Map<String, dynamic>? exist
 }
 ===FILE: lib/screens/settings.dart ===
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../core/photo.dart';
 import '../core/store.dart';
+import '../core/util.dart';
 import '../core/widgets.dart';
 import 'onboarding.dart';
 import 'subjects.dart';
 
-/// الإعدادات: المظهر، لون التطبيق، الملف الشخصي، مسح البيانات، ومعلومات التطبيق.
+/// الإعدادات: المظهر، الملف الشخصي، الفصل الحالي، تواريخ الفصول، مسح البيانات، ومعلومات التطبيق.
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
 
@@ -1245,6 +1380,9 @@ class SettingsTab extends StatelessWidget {
         final theme = Store.setting<String>('theme', 'dark');
         final accent = Store.accent.value;
         final p = Store.profile;
+        final name = (p['name'] as String?) ?? '';
+        final level = levelNames.contains(p['level']) ? p['level'] as String : levelNames[1];
+        final term = termNames.contains(p['term']) ? p['term'] as String : termNames[0];
 
         return Scaffold(
           appBar: AppBar(title: const Text('الإعدادات')),
@@ -1284,12 +1422,64 @@ class SettingsTab extends StatelessWidget {
               ),
               const SectionTitle('الملف الشخصي'),
               AppCard(
+                child: Row(
+                  children: [
+                    ProfileAvatar(photo: p['photo'] as String?, name: name, radius: 30),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 17)),
+                          Text('${p['university'] ?? ''}'),
+                          Text('${p['faculty'] ?? ''} • ${p['major'] ?? ''}'),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.photo_camera_outlined),
+                      label: const Text('تغيير الصورة'),
+                      onPressed: () async {
+                        final photo = await pickProfilePhoto();
+                        if (photo != null) await Store.updateProfile({'photo': photo});
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: level,
+                      decoration: const InputDecoration(labelText: 'المستوى الدراسي الحالي'),
+                      items: [
+                        for (final l in levelNames)
+                          DropdownMenuItem(value: l, child: Text('المستوى $l')),
+                      ],
+                      onChanged: (v) => Store.updateProfile({'level': v}),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: term,
+                      decoration: const InputDecoration(labelText: 'الترم الحالي'),
+                      items: [
+                        for (final t in termNames) DropdownMenuItem(value: t, child: Text(t)),
+                      ],
+                      onChanged: (v) => Store.updateProfile({'term': v}),
+                    ),
+                  ],
+                ),
+              ),
+              const SectionTitle('تواريخ الفصول الدراسية'),
+              AppCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(p['name'] as String? ?? '', style: const TextStyle(fontWeight: FontWeight.w800)),
-                    Text('المستوى ${p['level'] ?? ''} • ${p['term'] ?? ''}'),
-                    Text('${p['faculty'] ?? ''} • ${p['major'] ?? ''}'),
+                    for (final l in levelNames)
+                      for (final t in termNames) _termRow(context, l, t),
                   ],
                 ),
               ),
@@ -1313,10 +1503,19 @@ class SettingsTab extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('رفيق الجامعة', style: TextStyle(fontWeight: FontWeight.w900)),
+                    const Text('رفيق الطالب الجامعي', style: TextStyle(fontWeight: FontWeight.w900)),
                     Text('الإصدار $appVersion'),
                     Text('تصميم وتطوير: $developerName'),
-                    Text('للتواصل: $developerPhone'),
+                    InkWell(
+                      onTap: () => _showContactSheet(context),
+                      child: Text(
+                        'للتواصل: $developerPhone',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1327,12 +1526,86 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
+  /// نافذة التواصل: اتصال مباشر أو فتح واتساب على الرقم.
+  Future<void> _showContactSheet(BuildContext context) async {
+    final intlPhone = '967$developerPhone';
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'التواصل مع $developerName',
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: const Icon(Icons.call),
+              label: const Text('اتصال'),
+              onPressed: () async {
+                Navigator.pop(sheetContext);
+                await launchUrl(Uri.parse('tel:+$intlPhone'));
+              },
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.chat),
+              label: const Text('واتساب'),
+              onPressed: () async {
+                Navigator.pop(sheetContext);
+                await launchUrl(
+                  Uri.parse('https://wa.me/$intlPhone'),
+                  mode: LaunchMode.externalApplication,
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _termRow(BuildContext context, String level, String term) {
+    final r = Store.termRange(level, term);
+    final subtitle = r == null
+        ? 'لم يُحدَّد بعد'
+        : '${fmtDay(DateTime.parse(r['start'] as String))} ← ${fmtDay(DateTime.parse(r['end'] as String))}';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text('المستوى $level - $term'),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.edit_calendar_outlined),
+      onTap: () async {
+        final initial = r == null
+            ? null
+            : DateTimeRange(
+                start: DateTime.parse(r['start'] as String),
+                end: DateTime.parse(r['end'] as String),
+              );
+        final picked = await showDateRangePicker(
+          context: context,
+          firstDate: DateTime(2020),
+          lastDate: DateTime(2100),
+          initialDateRange: initial,
+        );
+        if (picked != null) {
+          await Store.setTermRange(level, term, ymd(picked.start), ymd(picked.end));
+        }
+      },
+    );
+  }
+
   Future<void> _confirmReset(BuildContext context) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('مسح كل البيانات؟'),
-        content: const Text('سيتم حذف الملف الشخصي والمواد والمحاضرات والحضور نهائياً.'),
+        content: const Text('سيتم حذف الملف الشخصي والمواد والمحاضرات والحضور والمهام والاختبارات نهائياً.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('إلغاء')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('نعم، امسح')),
@@ -1345,6 +1618,570 @@ class SettingsTab extends StatelessWidget {
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const OnboardingScreen()),
       (_) => false,
+    );
+  }
+}
+===FILE: lib/core/photo.dart ===
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+
+/// اختيار صورة الملف الشخصي من معرض الجهاز، وتحويلها إلى نص مضغوط يُحفظ مشفّراً.
+Future<String?> pickProfilePhoto() async {
+  final file = await ImagePicker().pickImage(
+    source: ImageSource.gallery,
+    maxWidth: 256,
+    maxHeight: 256,
+    imageQuality: 70,
+  );
+  if (file == null) return null;
+  return base64Encode(await file.readAsBytes());
+}
+
+ImageProvider? photoProvider(String? encoded) {
+  if (encoded == null || encoded.isEmpty) return null;
+  return MemoryImage(base64Decode(encoded));
+}
+
+/// صورة الملف الشخصي، أو الحرف الأول من الاسم إذا لم تُختر صورة.
+class ProfileAvatar extends StatelessWidget {
+  const ProfileAvatar({
+    super.key,
+    required this.photo,
+    required this.name,
+    this.radius = 32,
+  });
+
+  final String? photo;
+  final String name;
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) {
+    final image = photoProvider(photo);
+    return CircleAvatar(
+      radius: radius,
+      backgroundImage: image,
+      child: image == null
+          ? Text(
+              name.isEmpty ? '؟' : name.substring(0, 1),
+              style: TextStyle(fontSize: radius * 0.8, fontWeight: FontWeight.w900),
+            )
+          : null,
+    );
+  }
+}
+===FILE: lib/screens/exams.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+
+/// جدول الاختبارات: نصف الترم ونهاية الترم لكل مادة. موعد الاختبار لا يُدخل في نافذة المادة.
+class ExamsScreen extends StatelessWidget {
+  const ExamsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final exams = Store.all('exams')
+          ..sort((a, b) => (a['date'] as String).compareTo(b['date'] as String));
+        return Scaffold(
+          appBar: AppBar(title: const Text('الاختبارات')),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => openExamSheet(context),
+            icon: const Icon(Icons.add),
+            label: const Text('اختبار'),
+          ),
+          body: exams.isEmpty
+              ? const Center(child: Text('لا توجد اختبارات بعد. أضف اختبار نصف الترم أو نهاية الترم.'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [for (final e in exams) _examCard(context, e)],
+                ),
+        );
+      },
+    );
+  }
+
+  Widget _examCard(BuildContext context, Map<String, dynamic> e) {
+    final date = DateTime.parse(e['date'] as String);
+    final now = DateTime.now();
+    final days = date.difference(DateTime(now.year, now.month, now.day)).inDays;
+    final when = days < 0 ? 'انتهى' : (days == 0 ? 'اليوم' : 'بعد $days يوم');
+    final hall = (e['hall'] as String?) ?? '';
+    return AppCard(
+      onTap: () => openExamSheet(context, existing: e),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            Store.subjectName(e['subjectId'] as String),
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text('${e['type']}  •  ${e['kind'] ?? ''}  •  ${fmtDay(date)}  •  ${e['time'] ?? ''}'),
+          if (hall.isNotEmpty) Text('القاعة: $hall'),
+          const SizedBox(height: 6),
+          Text(
+            when,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// نافذة إضافة اختبار أو تعديله.
+Future<void> openExamSheet(BuildContext context, {Map<String, dynamic>? existing}) async {
+  final subjects = Store.all('subjects');
+  if (subjects.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('أضف مادة أولاً من قسم المواد')),
+    );
+    return;
+  }
+
+  var subjectId = (existing?['subjectId'] as String?) ?? subjects.first['id'] as String;
+  var type = (existing?['type'] as String?) ?? examTypes.first;
+  var date = (existing?['date'] as String?) ?? ymd(DateTime.now());
+  var time = (existing?['time'] as String?) ?? '08:00';
+  var kind = (existing?['kind'] as String?) ?? lectureTypes.first;
+  final hall = TextEditingController(text: (existing?['hall'] as String?) ?? '');
+
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (sheetContext, setSheet) {
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              20,
+              0,
+              20,
+              MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    existing == null ? 'اختبار جديد' : 'تعديل الاختبار',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 14),
+                  DropdownButtonFormField<String>(
+                    value: subjectId,
+                    decoration: const InputDecoration(labelText: 'المادة'),
+                    items: [
+                      for (final s in subjects)
+                        DropdownMenuItem(
+                          value: s['id'] as String,
+                          child: Text(s['name'] as String),
+                        ),
+                    ],
+                    onChanged: (v) => setSheet(() => subjectId = v!),
+                  ),
+                  const SizedBox(height: 12),
+                  SegmentedButton<String>(
+                    segments: [
+                      for (final t in examTypes) ButtonSegment(value: t, label: Text(t)),
+                    ],
+                    selected: {type},
+                    onSelectionChanged: (s) => setSheet(() => type = s.first),
+                  ),
+                  const SizedBox(height: 12),
+                  SegmentedButton<String>(
+                    segments: [
+                      for (final k in lectureTypes) ButtonSegment(value: k, label: Text(k)),
+                    ],
+                    selected: {kind},
+                    onSelectionChanged: (s) => setSheet(() => kind = s.first),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today),
+                    label: Text('التاريخ: ${fmtDay(DateTime.parse(date))}'),
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: sheetContext,
+                        initialDate: DateTime.parse(date),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2100),
+                      );
+                      if (d != null) setSheet(() => date = ymd(d));
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.access_time),
+                    label: Text('الوقت: $time'),
+                    onPressed: () async {
+                      final t = await showTimePicker(
+                        context: sheetContext,
+                        initialTime: parseTime(time),
+                      );
+                      if (t != null) setSheet(() => time = fmtTime(t));
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: hall,
+                    decoration: const InputDecoration(labelText: 'القاعة (اختياري)'),
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    onPressed: () async {
+                      await Store.upsert('exams', {
+                        'id': existing?['id'] ?? Store.newId(),
+                        'subjectId': subjectId,
+                        'type': type,
+                        'kind': kind,
+                        'date': date,
+                        'time': time,
+                        'hall': hall.text.trim(),
+                      });
+                      if (sheetContext.mounted) Navigator.pop(sheetContext);
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('حفظ', style: TextStyle(fontSize: 18)),
+                    ),
+                  ),
+                  if (existing != null)
+                    TextButton(
+                      onPressed: () async {
+                        await Store.remove('exams', existing['id'] as String);
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      },
+                      child: const Text('حذف الاختبار', style: TextStyle(color: Colors.red)),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+  hall.dispose();
+}
+===FILE: lib/screens/tasks.dart ===
+import 'package:flutter/material.dart';
+import '../core/store.dart';
+import '../core/util.dart';
+import '../core/widgets.dart';
+
+/// قائمة المهام: كل مهمة لها موعد وحالة تُختار من قائمة منسدلة.
+class TasksTab extends StatelessWidget {
+  const TasksTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder(
+      valueListenable: Store.listenable,
+      builder: (context, box, child) {
+        final tasks = Store.all('tasks')
+          ..sort((a, b) => (a['due'] as String).compareTo(b['due'] as String));
+        return Scaffold(
+          appBar: AppBar(title: const Text('المهام')),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => openTaskSheet(context),
+            icon: const Icon(Icons.add),
+            label: const Text('مهمة'),
+          ),
+          body: tasks.isEmpty
+              ? const Center(child: Text('لا توجد مهام بعد'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [for (final t in tasks) _taskCard(context, t)],
+                ),
+        );
+      },
+    );
+  }
+
+  Widget _taskCard(BuildContext context, Map<String, dynamic> t) {
+    final sid = (t['subjectId'] as String?) ?? '';
+    final done = t['status'] == 'مكتملة';
+    final due = DateTime.parse(t['due'] as String);
+    return AppCard(
+      onTap: () => openTaskSheet(context, existing: t),
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(
+              done ? Icons.check_circle : Icons.radio_button_unchecked,
+              color: done ? Colors.green : null,
+            ),
+            onPressed: () => Store.upsert('tasks', {
+              ...t,
+              'status': done ? 'لم تبدأ' : 'مكتملة',
+            }),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  t['title'] as String,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    decoration: done ? TextDecoration.lineThrough : null,
+                  ),
+                ),
+                Text(
+                  [
+                    if (sid.isNotEmpty) Store.subjectName(sid),
+                    'الموعد: ${fmtDay(due)}',
+                    t['status'] as String,
+                  ].join('  •  '),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// نافذة إضافة مهمة أو تعديلها.
+Future<void> openTaskSheet(BuildContext context, {Map<String, dynamic>? existing}) async {
+  final subjects = Store.all('subjects');
+  final title = TextEditingController(text: (existing?['title'] as String?) ?? '');
+  final savedSubject = (existing?['subjectId'] as String?) ?? '';
+  var subjectId =
+      subjects.any((s) => s['id'] == savedSubject) ? savedSubject : '';
+  var due = (existing?['due'] as String?) ?? ymd(DateTime.now());
+  var status = (existing?['status'] as String?) ?? taskStatuses.first;
+
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) {
+      return StatefulBuilder(
+        builder: (sheetContext, setSheet) {
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              20,
+              0,
+              20,
+              MediaQuery.of(sheetContext).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    existing == null ? 'مهمة جديدة' : 'تعديل المهمة',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: title,
+                    decoration: const InputDecoration(labelText: 'عنوان المهمة'),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: subjectId,
+                    decoration: const InputDecoration(labelText: 'المادة'),
+                    items: [
+                      const DropdownMenuItem(value: '', child: Text('بدون مادة')),
+                      for (final s in subjects)
+                        DropdownMenuItem(
+                          value: s['id'] as String,
+                          child: Text(s['name'] as String),
+                        ),
+                    ],
+                    onChanged: (v) => setSheet(() => subjectId = v ?? ''),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today),
+                    label: Text('الموعد: ${fmtDay(DateTime.parse(due))}'),
+                    onPressed: () async {
+                      final d = await showDatePicker(
+                        context: sheetContext,
+                        initialDate: DateTime.parse(due),
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime(2100),
+                      );
+                      if (d != null) setSheet(() => due = ymd(d));
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: status,
+                    decoration: const InputDecoration(labelText: 'الحالة'),
+                    items: [
+                      for (final s in taskStatuses)
+                        DropdownMenuItem(value: s, child: Text(s)),
+                    ],
+                    onChanged: (v) => setSheet(() => status = v!),
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    onPressed: () async {
+                      if (title.text.trim().isEmpty) {
+                        ScaffoldMessenger.of(sheetContext).showSnackBar(
+                          const SnackBar(content: Text('عنوان المهمة مطلوب')),
+                        );
+                        return;
+                      }
+                      await Store.upsert('tasks', {
+                        'id': existing?['id'] ?? Store.newId(),
+                        'title': title.text.trim(),
+                        'subjectId': subjectId,
+                        'due': due,
+                        'status': status,
+                      });
+                      if (sheetContext.mounted) Navigator.pop(sheetContext);
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Text('حفظ', style: TextStyle(fontSize: 18)),
+                    ),
+                  ),
+                  if (existing != null)
+                    TextButton(
+                      onPressed: () async {
+                        await Store.remove('tasks', existing['id'] as String);
+                        if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      },
+                      child: const Text('حذف المهمة', style: TextStyle(color: Colors.red)),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    },
+  );
+  title.dispose();
+}
+===FILE: lib/screens/pomodoro.dart ===
+import 'dart:async';
+import 'package:flutter/material.dart';
+
+/// مؤقت المذاكرة: 25 دقيقة تركيز ثم 5 دقائق استراحة.
+class PomodoroScreen extends StatefulWidget {
+  const PomodoroScreen({super.key});
+
+  @override
+  State<PomodoroScreen> createState() => _PomodoroScreenState();
+}
+
+class _PomodoroScreenState extends State<PomodoroScreen> {
+  static const _workSeconds = 25 * 60;
+  static const _breakSeconds = 5 * 60;
+
+  Timer? _timer;
+  bool _isWork = true;
+  int _left = _workSeconds;
+  int _sessions = 0;
+
+  bool get _running => _timer != null;
+
+  void _start() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_left <= 1) {
+        _timer?.cancel();
+        setState(() {
+          _timer = null;
+          if (_isWork) _sessions++;
+          _isWork = !_isWork;
+          _left = _isWork ? _workSeconds : _breakSeconds;
+        });
+      } else {
+        setState(() {
+          _left--;
+        });
+      }
+    });
+    setState(() {});
+  }
+
+  void _pause() {
+    _timer?.cancel();
+    setState(() {
+      _timer = null;
+    });
+  }
+
+  void _reset() {
+    _timer?.cancel();
+    setState(() {
+      _timer = null;
+      _left = _isWork ? _workSeconds : _breakSeconds;
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final minutes = (_left ~/ 60).toString().padLeft(2, '0');
+    final seconds = (_left % 60).toString().padLeft(2, '0');
+    return Scaffold(
+      appBar: AppBar(title: const Text('مؤقت المذاكرة')),
+      body: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _isWork ? 'وقت التركيز' : 'استراحة',
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '$minutes:$seconds',
+              style: TextStyle(
+                fontSize: 72,
+                fontWeight: FontWeight.w900,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text('الجلسات المكتملة: $_sessions'),
+            const SizedBox(height: 28),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                FilledButton(
+                  onPressed: _running ? _pause : _start,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                    child: Text(
+                      _running ? 'إيقاف مؤقت' : 'ابدأ',
+                      style: const TextStyle(fontSize: 18),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton(onPressed: _reset, child: const Text('إعادة')),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

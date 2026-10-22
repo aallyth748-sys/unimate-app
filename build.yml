@@ -55,7 +55,7 @@ jobs:
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's/<application/<application android:allowBackup="false"/' "$M"
-          sed -i 's/android:label="[^"]*"/android:label="رفيق الجامعة"/' "$M"
+          sed -i 's/android:label="[^"]*"/android:label="رفيق الطالب الجامعي"/' "$M"
 
       - name: تحميل المكتبات
         if: hashFiles('pubspec.yaml') != ''
