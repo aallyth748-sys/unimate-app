@@ -1432,6 +1432,7 @@ import '../core/photo.dart';
 import '../core/store.dart';
 import '../core/util.dart';
 import '../core/widgets.dart';
+import '../core/notifications.dart';
 import 'backup.dart';
 import 'onboarding.dart';
 import 'subjects.dart';
@@ -1563,6 +1564,20 @@ class SettingsTab extends StatelessWidget {
                   subtitle: const Text('تذكير قبل المحاضرات والاختبارات والمهام'),
                   value: Store.setting<bool>('alerts', true),
                   onChanged: (v) => Store.setSetting('alerts', v),
+                ),
+              ),
+              AppCard(
+                child: FilledButton.tonal(
+                  onPressed: () async {
+                    final msg = await Notifications.testNow();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+                    }
+                  },
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 10),
+                    child: Text('تجربة التنبيه الآن', style: TextStyle(fontSize: 16)),
+                  ),
                 ),
               ),
               AppCard(
@@ -2990,6 +3005,24 @@ class Notifications {
         now,
       );
     }
+  }
+
+  /// تنبيه تجريبي فوري، ويعرض عدد التنبيهات المجدولة لتشخيص المشكلة.
+  static Future<String> testNow() async {
+    if (!_ready) return 'التنبيهات غير جاهزة. أغلق التطبيق وافتحه من جديد.';
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        _channelId,
+        _channelName,
+        importance: Importance.max,
+        priority: Priority.high,
+        sound: const RawResourceAndroidNotificationSound(_soundName),
+        playSound: true,
+      ),
+    );
+    await _plugin.show(999001, 'تجربة التنبيه', 'إذا سمعت الصوت فالتنبيهات تعمل', details);
+    final pending = await _plugin.pendingNotificationRequests();
+    return 'أُرسل التنبيه التجريبي. عدد التنبيهات المجدولة: ${pending.length}';
   }
 
   static Future<void> _once(
