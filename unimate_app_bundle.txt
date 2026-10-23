@@ -3007,7 +3007,7 @@ class Notifications {
     }
   }
 
-  /// تنبيه تجريبي فوري، ويعرض عدد التنبيهات المجدولة لتشخيص المشكلة.
+  /// تجربة: تنبيه فوري، وتنبيه مجدول بعد دقيقة، مع عرض أي خطأ يحدث.
   static Future<String> testNow() async {
     if (!_ready) return 'التنبيهات غير جاهزة. أغلق التطبيق وافتحه من جديد.';
     final details = NotificationDetails(
@@ -3020,9 +3020,24 @@ class Notifications {
         playSound: true,
       ),
     );
-    await _plugin.show(999001, 'تجربة التنبيه', 'إذا سمعت الصوت فالتنبيهات تعمل', details);
-    final pending = await _plugin.pendingNotificationRequests();
-    return 'أُرسل التنبيه التجريبي. عدد التنبيهات المجدولة: ${pending.length}';
+    try {
+      await _plugin.show(999001, 'تجربة التنبيه', 'إذا سمعت الصوت فالتنبيهات تعمل', details);
+      final at = tz.TZDateTime.now(tz.local).add(const Duration(minutes: 1));
+      await _plugin.zonedSchedule(
+        999002,
+        'تجربة المجدول',
+        'هذا تنبيه مجدول بعد دقيقة',
+        at,
+        details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      final pending = await _plugin.pendingNotificationRequests();
+      return 'تم: تنبيه فوري، وتنبيه بعد دقيقة. عدد المجدول: ${pending.length}';
+    } catch (e) {
+      return 'خطأ: $e';
+    }
   }
 
   static Future<void> _once(
